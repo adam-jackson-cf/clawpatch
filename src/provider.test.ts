@@ -1794,6 +1794,167 @@ describe("openai-compatible provider helpers", () => {
       restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS", previousEnv.maxTokens);
     }
   });
+
+  it("posts map requests to an OpenAI-compatible endpoint and parses JSON content", async () => {
+    const originalFetch = globalThis.fetch;
+    const previousEnv = {
+      baseUrl: process.env["CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL"],
+      apiKey: process.env["CLAWPATCH_OPENAI_COMPATIBLE_API_KEY"],
+      model: process.env["CLAWPATCH_OPENAI_COMPATIBLE_MODEL"],
+      timeoutMs: process.env["CLAWPATCH_OPENAI_COMPATIBLE_TIMEOUT_MS"],
+      maxTokens: process.env["CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS"],
+    };
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  features: [
+                    {
+                      title: "CLI",
+                      summary: "Command-line entrypoint.",
+                      kind: "cli-command",
+                      confidence: "high",
+                      entrypoints: [
+                        { path: "src/cli.ts", symbol: null, route: null, command: "clawpatch" },
+                      ],
+                      ownedFiles: [{ path: "src/cli.ts", reason: "entrypoint" }],
+                      contextFiles: [],
+                      tests: [],
+                      tags: ["cli"],
+                      trustBoundaries: [],
+                      reason: "The file defines the CLI command surface.",
+                    },
+                  ],
+                  notes: ["ok"],
+                }),
+              },
+            },
+          ],
+        }),
+      );
+    });
+
+    process.env["CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL"] = "https://endpoint.test/v1/";
+    process.env["CLAWPATCH_OPENAI_COMPATIBLE_MODEL"] = "env-model";
+    delete process.env["CLAWPATCH_OPENAI_COMPATIBLE_API_KEY"];
+    delete process.env["CLAWPATCH_OPENAI_COMPATIBLE_TIMEOUT_MS"];
+    delete process.env["CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS"];
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    try {
+      const output = await providerByName("openai-compatible").map("/repo", "map prompt", {
+        model: null,
+        reasoningEffort: null,
+        skipGitRepoCheck: false,
+      });
+
+      expect(output.features).toHaveLength(1);
+      expect(output.features[0]?.title).toBe("CLI");
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(String(init.body));
+      expect(body.model).toBe("env-model");
+      expect(body.messages[1].content).toContain("map prompt");
+      expect(body.messages[1].content).toContain('"features"');
+    } finally {
+      globalThis.fetch = originalFetch;
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL", previousEnv.baseUrl);
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_API_KEY", previousEnv.apiKey);
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_MODEL", previousEnv.model);
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_TIMEOUT_MS", previousEnv.timeoutMs);
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS", previousEnv.maxTokens);
+    }
+  });
+
+  it("posts revalidate requests to an OpenAI-compatible endpoint and parses JSON content", async () => {
+    const originalFetch = globalThis.fetch;
+    const previousEnv = {
+      baseUrl: process.env["CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL"],
+      apiKey: process.env["CLAWPATCH_OPENAI_COMPATIBLE_API_KEY"],
+      model: process.env["CLAWPATCH_OPENAI_COMPATIBLE_MODEL"],
+      timeoutMs: process.env["CLAWPATCH_OPENAI_COMPATIBLE_TIMEOUT_MS"],
+      maxTokens: process.env["CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS"],
+    };
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  outcome: "open",
+                  reasoning: "The finding still applies.",
+                  commands: ["pnpm test"],
+                }),
+              },
+            },
+          ],
+        }),
+      );
+    });
+
+    process.env["CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL"] = "https://endpoint.test/v1/";
+    process.env["CLAWPATCH_OPENAI_COMPATIBLE_MODEL"] = "env-model";
+    delete process.env["CLAWPATCH_OPENAI_COMPATIBLE_API_KEY"];
+    delete process.env["CLAWPATCH_OPENAI_COMPATIBLE_TIMEOUT_MS"];
+    delete process.env["CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS"];
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    try {
+      const output = await providerByName("openai-compatible").revalidate(
+        "/repo",
+        "revalidate prompt",
+        {
+          model: null,
+          reasoningEffort: null,
+          skipGitRepoCheck: false,
+        },
+      );
+
+      expect(output).toEqual({
+        outcome: "open",
+        reasoning: "The finding still applies.",
+        commands: ["pnpm test"],
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(String(init.body));
+      expect(body.messages[1].content).toContain("revalidate prompt");
+      expect(body.messages[1].content).toContain('"outcome"');
+    } finally {
+      globalThis.fetch = originalFetch;
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL", previousEnv.baseUrl);
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_API_KEY", previousEnv.apiKey);
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_MODEL", previousEnv.model);
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_TIMEOUT_MS", previousEnv.timeoutMs);
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS", previousEnv.maxTokens);
+    }
+  });
+
+  it("rejects fix requests before calling an OpenAI-compatible endpoint", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    try {
+      await expect(
+        providerByName("openai-compatible").fix("/repo", "fix prompt", {
+          model: null,
+          reasoningEffort: null,
+          skipGitRepoCheck: false,
+        }),
+      ).rejects.toMatchObject({
+        code: "unsupported-provider",
+        message: "openai-compatible provider does not support fix",
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 function buildToleranceFinding(overrides: Record<string, unknown> = {}): Record<string, unknown> {
