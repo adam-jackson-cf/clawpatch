@@ -13,14 +13,49 @@ const runId =
 const captureDir = join(capturesRoot, runId);
 const reviewLimitPerRepo = Number(process.env.CLAWPATCH_TEACHER_REVIEW_LIMIT ?? "84");
 const reviewJobs = Number(process.env.CLAWPATCH_TEACHER_REVIEW_JOBS ?? "4");
-const revalidateLimitPerRepo = Number(process.env.CLAWPATCH_TEACHER_REVALIDATE_LIMIT ?? "1");
-const acceptedTarget = Number(process.env.CLAWPATCH_TEACHER_ACCEPTED_TARGET ?? "250");
+const revalidateLimitPerRepo = Number(process.env.CLAWPATCH_TEACHER_REVALIDATE_LIMIT ?? "20");
+const acceptedTarget = Number(process.env.CLAWPATCH_TEACHER_ACCEPTED_TARGET ?? "500");
 
-const selected = [
-  { repo: "https://github.com/pallets/click.git", name: "click" },
-  { repo: "https://github.com/BurntSushi/ripgrep.git", name: "ripgrep" },
-  { repo: "https://github.com/honojs/hono.git", name: "hono" },
-];
+const candidates = new Map([
+  ["click", { repo: "https://github.com/pallets/click.git", name: "click" }],
+  ["ripgrep", { repo: "https://github.com/BurntSushi/ripgrep.git", name: "ripgrep" }],
+  ["hono", { repo: "https://github.com/honojs/hono.git", name: "hono" }],
+  ["fastify", { repo: "https://github.com/fastify/fastify.git", name: "fastify" }],
+  ["flask", { repo: "https://github.com/pallets/flask.git", name: "flask" }],
+]);
+
+const selectedNames = (process.env.CLAWPATCH_TEACHER_REPOS ?? "click,ripgrep,hono,fastify,flask")
+  .split(",")
+  .map((name) => name.trim())
+  .filter((name) => name.length > 0);
+const selected = selectedNames.map((name) => {
+  const candidate = candidates.get(name);
+  if (candidate === undefined) {
+    throw new Error(`unknown CLAWPATCH_TEACHER_REPOS entry: ${name}`);
+  }
+  return candidate;
+});
+if (selected.length === 0) {
+  throw new Error("CLAWPATCH_TEACHER_REPOS must select at least one repository");
+}
+
+const captureTargets = {
+  review: acceptedTarget,
+  revalidate: selected.length * revalidateLimitPerRepo,
+  map: selected.length,
+};
+
+const followUpTargetMinimums = {
+  review: 500,
+  revalidate: 100,
+  map: 25,
+};
+
+const followUpGapsAfterThisRun = {
+  review: Math.max(0, followUpTargetMinimums.review - captureTargets.review),
+  revalidate: Math.max(0, followUpTargetMinimums.revalidate - captureTargets.revalidate),
+  map: Math.max(0, followUpTargetMinimums.map - captureTargets.map),
+};
 
 mkdirSync(teacherRunsRoot, { recursive: true });
 mkdirSync(captureDir, { recursive: true });
@@ -130,10 +165,14 @@ writeFileSync(
     `Review jobs: ${reviewJobs}`,
     `Revalidate limit per repo: ${revalidateLimitPerRepo}`,
     `Accepted target: ${acceptedTarget}`,
+    `Selected repositories: ${selected.map((candidate) => candidate.name).join(", ")}`,
+    `Capture targets: ${JSON.stringify(captureTargets)}`,
+    `Follow-up target minimums: ${JSON.stringify(followUpTargetMinimums)}`,
+    `Follow-up gaps after this run: ${JSON.stringify(followUpGapsAfterThisRun)}`,
     "",
     "## Follow-up Path",
     "",
-    "After this pilot reaches at least 250 accepted captures, scale to 5 repositories and 1,000 accepted captures before Hugging Face dataset curation/upload planning.",
+    "After this run, keep expanding repository roots until the retained corpus reaches the review, revalidate, and map target minimums without counting duplicate or metadata-only captures.",
     "",
   ].join("\n"),
 );

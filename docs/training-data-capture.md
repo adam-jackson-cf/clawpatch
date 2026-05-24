@@ -6,8 +6,8 @@ This charter defines the approved Phase 0 through Phase 2 workflow for collectin
 
 - Capture source operations: `map`, `review`, and `revalidate`.
 - Non-goals: Gemma training, Gemma runtime provider integration, and `fix` capture or replacement.
-- Pilot target: 3 qualified public repositories and at least 250 accepted captures across `map`, `review`, and `revalidate`.
-- Follow-up path: after the pilot proves the approach, scale to a 5-repository, 1,000-accepted-capture dataset seed.
+- Current target: 5 qualified public repositories, at least 500 accepted review captures, at least 100 accepted revalidate captures when findings exist, and continued map expansion until the retained map corpus reaches the target minimum.
+- Follow-up path: keep expanding repository roots until the retained corpus reaches the review, revalidate, and map target minimums without counting duplicate or metadata-only captures.
 - Success criterion: accepted captures are schema-valid and pass Clawpatch operation-specific validation, including review evidence/path/line validation where applicable.
 
 ## Privacy Boundary
@@ -64,7 +64,7 @@ A Phase 2 repository qualifies only if it satisfies the balanced training-signal
 - at least 12 source-like files
 - at least 5 test-like files
 - no weak-map result
-- at least 2 tech stacks across the 3 repositories
+- at least 3 tech stacks across the 5 repositories
 - at least 20 source-like files and 10 test-like files per repo where practical
 - validation/test commands detectable or easy to document
 - limited generated/vendor dominance

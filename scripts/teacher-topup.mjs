@@ -11,9 +11,9 @@ if (runId === undefined || runId.length === 0) {
   throw new Error("CLAWPATCH_CAPTURE_RUN_ID is required");
 }
 const captureDir = join(workspaceRoot, "captures", runId);
-const target = Number(process.env.CLAWPATCH_TEACHER_ACCEPTED_TARGET ?? "250");
+const target = Number(process.env.CLAWPATCH_TEACHER_ACCEPTED_TARGET ?? "500");
 const concurrency = Number(process.env.CLAWPATCH_TEACHER_TOPUP_JOBS ?? "4");
-const repos = (process.env.CLAWPATCH_TEACHER_REPOS ?? "click,ripgrep,hono")
+const repos = (process.env.CLAWPATCH_TEACHER_REPOS ?? "click,ripgrep,hono,fastify,flask")
   .split(",")
   .map((name) => name.trim())
   .filter((name) => name.length > 0);
