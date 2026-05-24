@@ -20,6 +20,7 @@ Provider names today:
 - `opencode`: shells out to `opencode run --format json`
 - `pi`: shells out to `pi -p` (non-interactive print mode)
 - `cursor`: shells out to `cursor-agent -p --output-format json`
+- `openai-compatible`: calls an OpenAI-style `/chat/completions` endpoint
 - `mock`: deterministic provider for tests and fixtures
 - `mock-fail`: failure provider for tests
 
@@ -317,7 +318,35 @@ uses `--force` or `--yolo`. Complete HITL verification before promoting this to
 default provider support, especially for ambient rules, MCP configuration,
 temporary prompt file handling, timeout behavior, and any claimed read-only mode.
 
-Direct OpenAI API, local-model, and multi-model panel providers are not
-implemented yet. The `acpx` provider is the generic route for ACP-compatible
-agents; the `grok`, `opencode`, `pi`, and `cursor` providers are direct integrations
-for local CLIs.
+## OpenAI-Compatible HTTP
+
+The `openai-compatible` provider calls a `/chat/completions` endpoint that
+accepts OpenAI-style request and response envelopes. It is intended for hosted
+or local Clawpatch-specialized models, including vLLM or endpoint wrappers.
+
+Configure it with environment variables:
+
+```bash
+export CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL=http://localhost:8000/v1
+export CLAWPATCH_OPENAI_COMPATIBLE_MODEL=gemma-clawpatch-review-lora-v0
+export CLAWPATCH_OPENAI_COMPATIBLE_API_KEY=...
+clawpatch review --provider openai-compatible
+```
+
+Optional settings:
+
+- `CLAWPATCH_OPENAI_COMPATIBLE_TIMEOUT_MS`
+- `CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS`
+
+How the provider works:
+
+- Supported operations: `map`, `review`, and `revalidate`
+- Unsupported operation: `fix` fails loudly and does not call the endpoint
+- Prompting: sends the Clawpatch prompt plus the relevant JSON schema
+- Response parsing: reads `choices[0].message.content` and extracts strict JSON
+- Validation: uses the same Clawpatch schemas and review validation as other
+  providers
+
+Direct local-model runtime management is not implemented. The `acpx` provider is
+the generic route for ACP-compatible agents; the `grok`, `opencode`, `pi`, and
+`cursor` providers are direct integrations for local CLIs.

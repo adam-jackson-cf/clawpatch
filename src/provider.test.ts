@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClawpatchError } from "./errors.js";
 import { __testing, extractJson, providerByName } from "./provider.js";
 import { safeProviderPreview } from "./provider-json.js";
@@ -33,6 +33,8 @@ const {
   extractOpencodeJson,
   formatZodError,
   formatZodIssue,
+  openAiCompatibleConfig,
+  openAiCompatibleContent,
   parseAcpxJsonOutput,
   parseAcpxAgent,
   parseClaudeVersion,
@@ -77,6 +79,37 @@ function withEnv(name: string, value: string | undefined, fn: () => void): void 
     } else {
       process.env[name] = previous;
     }
+  }
+}
+
+function withEnvMap(values: Record<string, string | undefined>, fn: () => void): void {
+  const previous = new Map<string, string | undefined>();
+  for (const [name, value] of Object.entries(values)) {
+    previous.set(name, process.env[name]);
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
+  try {
+    fn();
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
   }
 }
 
@@ -1649,6 +1682,117 @@ describe("providerByName", () => {
     expect(providerByName("codex").name).toBe("codex");
     expect(providerByName("mock").name).toBe("mock");
     expect(providerByName("mock-fail").name).toBe("mock-fail");
+  });
+
+  it("supports the generic openai-compatible provider", () => {
+    expect(providerByName("openai-compatible").name).toBe("openai-compatible");
+  });
+});
+
+describe("openai-compatible provider helpers", () => {
+  it("reads endpoint and model configuration without exposing secrets", () => {
+    withEnvMap(
+      {
+        CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL: "https://example.test/v1/",
+        CLAWPATCH_OPENAI_COMPATIBLE_API_KEY: "secret-value",
+        CLAWPATCH_OPENAI_COMPATIBLE_MODEL: "gemma-model",
+        CLAWPATCH_OPENAI_COMPATIBLE_TIMEOUT_MS: "1234",
+        CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS: "4096",
+      },
+      () => {
+        expect(openAiCompatibleConfig(null)).toEqual({
+          baseUrl: "https://example.test/v1",
+          apiKey: "secret-value",
+          model: "gemma-model",
+          timeoutMs: 1234,
+          maxTokens: 4096,
+        });
+        expect(openAiCompatibleConfig("flag-model").model).toBe("flag-model");
+      },
+    );
+  });
+
+  it("extracts OpenAI-compatible message content", () => {
+    expect(
+      openAiCompatibleContent({
+        choices: [
+          {
+            message: {
+              content: '{"findings":[],"inspected":{"files":[],"symbols":[],"notes":[]}}',
+            },
+          },
+        ],
+      }),
+    ).toContain('"findings"');
+  });
+
+  it("posts review requests to an OpenAI-compatible endpoint and parses JSON content", async () => {
+    const originalFetch = globalThis.fetch;
+    const previousEnv = {
+      baseUrl: process.env["CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL"],
+      apiKey: process.env["CLAWPATCH_OPENAI_COMPATIBLE_API_KEY"],
+      model: process.env["CLAWPATCH_OPENAI_COMPATIBLE_MODEL"],
+      timeoutMs: process.env["CLAWPATCH_OPENAI_COMPATIBLE_TIMEOUT_MS"],
+      maxTokens: process.env["CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS"],
+    };
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  findings: [],
+                  inspected: { files: ["src/app.ts"], symbols: [], notes: ["ok"] },
+                }),
+              },
+            },
+          ],
+        }),
+      );
+    });
+
+    process.env["CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL"] = "https://endpoint.test/v1/";
+    process.env["CLAWPATCH_OPENAI_COMPATIBLE_API_KEY"] = "secret-value";
+    process.env["CLAWPATCH_OPENAI_COMPATIBLE_MODEL"] = "env-model";
+    process.env["CLAWPATCH_OPENAI_COMPATIBLE_TIMEOUT_MS"] = "30000";
+    process.env["CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS"] = "1024";
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    try {
+      const output = await providerByName("openai-compatible").review("/repo", "review prompt", {
+        model: "flag-model",
+        reasoningEffort: null,
+        skipGitRepoCheck: false,
+      });
+
+      expect(output).toEqual({
+        findings: [],
+        inspected: { files: ["src/app.ts"], symbols: [], notes: ["ok"] },
+        droppedFindings: [],
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe("https://endpoint.test/v1/chat/completions");
+      expect(init.method).toBe("POST");
+      expect(init.headers).toMatchObject({
+        authorization: "Bearer secret-value",
+        "content-type": "application/json",
+      });
+      const body = JSON.parse(String(init.body));
+      expect(body.model).toBe("flag-model");
+      expect(body.max_tokens).toBe(1024);
+      expect(body.response_format).toEqual({ type: "json_object" });
+      expect(body.messages[1].content).toContain("review prompt");
+      expect(body.messages[1].content).toContain('"findings"');
+    } finally {
+      globalThis.fetch = originalFetch;
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL", previousEnv.baseUrl);
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_API_KEY", previousEnv.apiKey);
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_MODEL", previousEnv.model);
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_TIMEOUT_MS", previousEnv.timeoutMs);
+      restoreEnv("CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS", previousEnv.maxTokens);
+    }
   });
 });
 

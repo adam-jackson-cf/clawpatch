@@ -281,6 +281,9 @@ export function providerByName(name: string): Provider {
   if (name === "claude") {
     return claudeProvider;
   }
+  if (name === "openai-compatible") {
+    return openAiCompatibleProvider;
+  }
   if (name === "mock") {
     return mockProvider;
   }
@@ -322,6 +325,41 @@ const codexProvider: Provider = {
   ): Promise<RevalidateOutput> {
     const output = await runCodexJson(root, prompt, options, revalidateJsonSchema);
     return parseOrThrow(revalidateOutputSchema, output, "codex revalidate");
+  },
+};
+
+const openAiCompatibleProvider: Provider = {
+  name: "openai-compatible",
+  async check(): Promise<string> {
+    const config = openAiCompatibleConfig(null);
+    return `openai-compatible ${config.model} at ${config.baseUrl}`;
+  },
+  async map(_root: string, prompt: string, options: ProviderOptions): Promise<AgentMapOutput> {
+    const output = await runOpenAiCompatibleJson(prompt, options, agentMapJsonSchema);
+    return parseOrThrow(agentMapOutputSchema, output, "openai-compatible agent-map");
+  },
+  async review(
+    _root: string,
+    prompt: string,
+    options: ProviderOptions,
+  ): Promise<PartitionedReviewOutput> {
+    const output = await runOpenAiCompatibleJson(prompt, options, reviewJsonSchema);
+    return parseReviewOutput(output);
+  },
+  async fix(): Promise<FixPlanOutput> {
+    throw new ClawpatchError(
+      "openai-compatible provider does not support fix",
+      2,
+      "unsupported-provider",
+    );
+  },
+  async revalidate(
+    _root: string,
+    prompt: string,
+    options: ProviderOptions,
+  ): Promise<RevalidateOutput> {
+    const output = await runOpenAiCompatibleJson(prompt, options, revalidateJsonSchema);
+    return parseOrThrow(revalidateOutputSchema, output, "openai-compatible revalidate");
   },
 };
 
@@ -1560,6 +1598,161 @@ async function runCodexJson(
   }
 }
 
+type OpenAiCompatibleConfig = {
+  baseUrl: string;
+  apiKey: string | null;
+  model: string;
+  timeoutMs: number;
+  maxTokens: number | null;
+};
+
+function openAiCompatibleConfig(model: string | null): OpenAiCompatibleConfig {
+  const baseUrl = process.env["CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL"]?.replace(/\/+$/u, "");
+  if (baseUrl === undefined || baseUrl.length === 0) {
+    throw new ClawpatchError(
+      "CLAWPATCH_OPENAI_COMPATIBLE_BASE_URL is required",
+      4,
+      "provider-auth",
+    );
+  }
+  const resolvedModel = model ?? process.env["CLAWPATCH_OPENAI_COMPATIBLE_MODEL"];
+  if (resolvedModel === undefined || resolvedModel.length === 0) {
+    throw new ClawpatchError("openai-compatible model is required", 2, "invalid-usage");
+  }
+  return {
+    baseUrl,
+    apiKey: process.env["CLAWPATCH_OPENAI_COMPATIBLE_API_KEY"] ?? null,
+    model: resolvedModel,
+    timeoutMs: positiveIntegerEnv("CLAWPATCH_OPENAI_COMPATIBLE_TIMEOUT_MS", 120_000),
+    maxTokens: optionalPositiveIntegerEnv("CLAWPATCH_OPENAI_COMPATIBLE_MAX_TOKENS"),
+  };
+}
+
+async function runOpenAiCompatibleJson(
+  prompt: string,
+  options: ProviderOptions,
+  schema: object,
+): Promise<unknown> {
+  const config = openAiCompatibleConfig(options.model);
+  const body: Record<string, unknown> = {
+    model: config.model,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a Clawpatch provider. Return only JSON matching the requested schema. Do not include markdown fences or prose.",
+      },
+      {
+        role: "user",
+        content: `${prompt}\n\nJSON schema:\n${JSON.stringify(schema)}`,
+      },
+    ],
+    response_format: { type: "json_object" },
+  };
+  if (config.maxTokens !== null) {
+    body["max_tokens"] = config.maxTokens;
+  }
+
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
+  if (config.apiKey !== null && config.apiKey.length > 0) {
+    headers["authorization"] = `Bearer ${config.apiKey}`;
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${config.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(config.timeoutMs),
+    });
+  } catch (error) {
+    throw new ClawpatchError(
+      `openai-compatible request failed: ${error instanceof Error ? error.message : String(error)}`,
+      1,
+      "provider-failure",
+    );
+  }
+
+  const text = await response.text();
+  if (!response.ok) {
+    const preview = safeProviderPreview(text);
+    const exitCode = response.status === 401 || response.status === 403 ? 4 : 1;
+    throw new ClawpatchError(
+      `openai-compatible request failed with HTTP ${response.status}: ${preview}`,
+      exitCode,
+      exitCode === 4 ? "provider-auth" : "provider-failure",
+    );
+  }
+
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(text);
+  } catch {
+    throw new ClawpatchError(
+      `openai-compatible response was not JSON (preview: ${safeProviderPreview(text)})`,
+      8,
+      "malformed-output",
+    );
+  }
+  return parseCodexJson(openAiCompatibleContent(envelope));
+}
+
+function openAiCompatibleContent(envelope: unknown): string {
+  if (typeof envelope !== "object" || envelope === null) {
+    throw new ClawpatchError(
+      "openai-compatible response envelope is malformed",
+      8,
+      "malformed-output",
+    );
+  }
+  const choices = (envelope as Record<string, unknown>)["choices"];
+  if (!Array.isArray(choices) || choices.length === 0) {
+    throw new ClawpatchError("openai-compatible response has no choices", 8, "malformed-output");
+  }
+  const first = choices[0];
+  if (typeof first !== "object" || first === null) {
+    throw new ClawpatchError(
+      "openai-compatible response choice is malformed",
+      8,
+      "malformed-output",
+    );
+  }
+  const message = (first as Record<string, unknown>)["message"];
+  if (typeof message !== "object" || message === null) {
+    throw new ClawpatchError(
+      "openai-compatible response message is malformed",
+      8,
+      "malformed-output",
+    );
+  }
+  const content = (message as Record<string, unknown>)["content"];
+  if (typeof content !== "string" || content.length === 0) {
+    throw new ClawpatchError("openai-compatible response content is empty", 8, "malformed-output");
+  }
+  return content;
+}
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function optionalPositiveIntegerEnv(name: string): number | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw.length === 0) {
+    return null;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+}
+
 function codexFailureMessage(stdout: string, stderr: string): string {
   const output = stderr || stdout;
   const scopeAdvice = /api\.responses\.write|insufficient permissions|missing scopes/iu.test(output)
@@ -2244,6 +2437,8 @@ export const __testing = {
   parseClaudeVersion,
   formatZodError,
   formatZodIssue,
+  openAiCompatibleConfig,
+  openAiCompatibleContent,
   parseAcpxAgent,
   parseCodexJson,
   parseReviewOutput,
