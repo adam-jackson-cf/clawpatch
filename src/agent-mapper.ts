@@ -1,7 +1,9 @@
 import { isAbsolute, join } from "node:path";
 import { buildAgentMapPrompt } from "./prompt.js";
+import { writeProviderCapture, type CaptureOptions, type CaptureRepoMetadata } from "./capture.js";
 import { ClawpatchError } from "./errors.js";
 import { Provider, ProviderOptions } from "./provider.js";
+import { agentMapJsonSchema } from "./provider-schema.js";
 import { AgentMapOutput, FeatureRecord, ProjectRecord } from "./types.js";
 import { pathExists } from "./fs.js";
 import { runCommandArgs } from "./exec.js";
@@ -34,6 +36,11 @@ type AgentMapOptions = {
   provider: Provider | null;
   providerOptions: ProviderOptions;
   inventory?: PathFilters;
+  capture?: {
+    options: CaptureOptions | null;
+    provider: { name: string; model: string | null; reasoningEffort: string | null };
+    repo: CaptureRepoMetadata;
+  };
   onProgress?: (event: string, fields: Record<string, string | number | boolean>) => void;
 };
 
@@ -151,6 +158,7 @@ export async function mapWithSource(
     options.providerOptions,
     inventory,
     options.inventory,
+    options.capture,
   );
   options.onProgress?.("agent-done", {
     features: agent.features.length,
@@ -203,6 +211,7 @@ async function agentMap(
   providerOptions: ProviderOptions,
   inventory: RepoInventory,
   filters: PathFilters | undefined,
+  capture: AgentMapOptions["capture"],
 ): Promise<MapResult> {
   const prompt = buildAgentMapPrompt(project, {
     manifests: inventory.manifests,
@@ -212,14 +221,67 @@ async function agentMap(
     files: inventory.fileSamples,
     summary: inventorySummary(inventory),
   });
-  const output = await provider.map(root, prompt, providerOptions);
-  const seeds = await Promise.all(
-    output.features.map((feature) => toSeed(root, feature, inventory.allFiles)),
-  );
-  const mappedSeeds = uniqueSeeds(seeds.filter((seed): seed is FeatureSeed => seed !== null));
-  return filters === undefined
-    ? mapFeatureSeeds(root, project, existing, mappedSeeds)
-    : mapFeatureSeeds(root, project, existing, mappedSeeds, { filters });
+  try {
+    const output = await provider.map(root, prompt, providerOptions);
+    const seeds = await Promise.all(
+      output.features.map((feature) => toSeed(root, feature, inventory.allFiles)),
+    );
+    const mappedSeeds = uniqueSeeds(seeds.filter((seed): seed is FeatureSeed => seed !== null));
+    const result = await (filters === undefined
+      ? mapFeatureSeeds(root, project, existing, mappedSeeds)
+      : mapFeatureSeeds(root, project, existing, mappedSeeds, { filters }));
+    await writeProviderCapture(capture?.options ?? null, {
+      operation: "map",
+      prompt,
+      schema: agentMapJsonSchema,
+      rawOutput: output,
+      acceptedOutput: {
+        features: result.features,
+        created: result.created,
+        changed: result.changed,
+        stale: result.stale,
+      },
+      validationStatus: "schema-valid-operation-valid",
+      status: "accepted",
+      provider: capture?.provider ?? {
+        name: provider.name,
+        model: providerOptions.model,
+        reasoningEffort: providerOptions.reasoningEffort,
+      },
+      repo: capture?.repo ?? {
+        rootPath: root,
+        projectName: project.name,
+        headSha: project.git.headSha,
+        remoteUrl: project.git.remoteUrl,
+        currentBranch: project.git.currentBranch,
+      },
+    });
+    return result;
+  } catch (error: unknown) {
+    await writeProviderCapture(capture?.options ?? null, {
+      operation: "map",
+      prompt,
+      schema: agentMapJsonSchema,
+      rawOutput: null,
+      acceptedOutput: null,
+      validationStatus: error instanceof ClawpatchError ? "provider-error" : "schema-invalid",
+      status: "rejected",
+      provider: capture?.provider ?? {
+        name: provider.name,
+        model: providerOptions.model,
+        reasoningEffort: providerOptions.reasoningEffort,
+      },
+      repo: capture?.repo ?? {
+        rootPath: root,
+        projectName: project.name,
+        headSha: project.git.headSha,
+        remoteUrl: project.git.remoteUrl,
+        currentBranch: project.git.currentBranch,
+      },
+      error: { message: error instanceof Error ? error.message : String(error), code: null },
+    });
+    throw error;
+  }
 }
 
 async function toSeed(

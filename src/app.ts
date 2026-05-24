@@ -6,6 +6,12 @@ import {
   hasSourceDirtyWorktree,
   sourceChangedSnapshots,
 } from "./change-audit.js";
+import {
+  captureOptionsFromFlags,
+  writeProviderCapture,
+  type CaptureOptions,
+  type CaptureRepoMetadata,
+} from "./capture.js";
 import { loadConfig, resolveStateDir, GlobalOptions } from "./config.js";
 import { detectProject } from "./detect.js";
 import { ClawpatchError, assertDefined } from "./errors.js";
@@ -23,6 +29,7 @@ import { mapWithSource } from "./agent-mapper.js";
 import { mapFeatures } from "./mapper.js";
 import { emitProgress } from "./progress.js";
 import { providerByName, type DroppedFinding } from "./provider.js";
+import { reviewJsonSchema, revalidateJsonSchema } from "./provider-schema.js";
 import { buildFixPrompt, buildReviewPromptBundle, buildRevalidatePrompt } from "./prompt.js";
 import type { ReviewMode, ReviewPromptManifest } from "./prompt.js";
 import {
@@ -153,6 +160,11 @@ export async function mapCommand(
     provider,
     providerOptions: providerOptions(config),
     inventory: filters,
+    capture: {
+      options: captureOptionsFromFlags(flags),
+      provider: providerMetadata(provider?.name ?? config.provider.name, config),
+      repo: repoMetadata(loaded.root, loaded.project, await discoverGit(loaded.root)),
+    },
     onProgress: (event, fields) => {
       emitProgress(context, "map", event, fields);
     },
@@ -306,6 +318,7 @@ export async function reviewCommand(
   }
   const currentRunId = runId();
   const currentGit = await discoverGit(loaded.root);
+  const captureOptions = captureOptionsFromFlags(flags);
   const run = newRun(currentRunId, "review", context, loaded.root, currentGit.headSha);
   run.claimedFeatureIds = features.map((feature) => feature.featureId);
   await writeRun(loaded.paths, run);
@@ -347,6 +360,8 @@ export async function reviewCommand(
             mode,
             customPrompt,
             limiter,
+            captureOptions,
+            repo: repoMetadata(loaded.root, loaded.project, currentGit),
             allowNonPendingFeatureReview: stringFlag(flags, "feature") !== undefined,
           });
           findingIds.push(...reviewed.findingIds);
@@ -657,6 +672,8 @@ type ReviewFeatureOptions = {
   mode: ReviewMode;
   customPrompt: string | null;
   limiter: RpmLimiter;
+  captureOptions: CaptureOptions | null;
+  repo: CaptureRepoMetadata;
   allowNonPendingFeatureReview: boolean;
 };
 
@@ -675,6 +692,8 @@ async function reviewFeature(
     mode,
     customPrompt,
     limiter,
+    captureOptions,
+    repo,
     allowNonPendingFeatureReview,
   } = options;
   const started = Date.now();
@@ -713,6 +732,8 @@ async function reviewFeature(
       index,
       total,
       limiter,
+      captureOptions,
+      repo,
     });
     // Layer 1 drops: per-finding schema violations from parseReviewOutput.
     const droppedFindings: DroppedFinding[] = [...providerOutput.droppedFindings];
@@ -734,6 +755,25 @@ async function reviewFeature(
       reviewOutput,
     );
     droppedFindings.push(...validated.droppedFindings);
+    await writeProviderCapture(captureOptions, {
+      operation: "review",
+      prompt: reviewPrompt.prompt,
+      schema: reviewJsonSchema,
+      rawOutput: providerOutput,
+      acceptedOutput: {
+        findings: validated.findings,
+        inspected: reviewOutput.inspected,
+      },
+      rejectedOutput: droppedFindings.length === 0 ? null : { droppedFindings },
+      validationStatus: "schema-valid-operation-valid",
+      status: "accepted",
+      provider: providerMetadata(provider.name, config),
+      repo,
+      tags: [
+        validated.findings.length === 0 ? "clean/no-finding" : "non-empty-review",
+        mode === "deslopify" ? "deslopify" : "default",
+      ],
+    });
     const records = validated.findings.map((finding) =>
       findingFromOutput(finding, lockedFeature.featureId, currentRunId),
     );
@@ -826,6 +866,8 @@ async function runProviderReviewWithRetry(args: {
   index: number;
   total: number;
   limiter?: RpmLimiter;
+  captureOptions?: CaptureOptions | null | undefined;
+  repo?: CaptureRepoMetadata | undefined;
 }): Promise<ProviderReviewOutput> {
   const { provider, root, prompt, options, context, featureId, index, total, limiter } = args;
   const maxAttempts = 1 + reviewRetries();
@@ -837,6 +879,33 @@ async function runProviderReviewWithRetry(args: {
     } catch (error: unknown) {
       lastError = error;
       if (!isRetryableReviewError(error) || attempt === maxAttempts) {
+        await writeProviderCapture(args.captureOptions ?? null, {
+          operation: "review",
+          prompt,
+          schema: reviewJsonSchema,
+          rawOutput: null,
+          acceptedOutput: null,
+          validationStatus: error instanceof ClawpatchError ? "provider-error" : "schema-invalid",
+          status: "rejected",
+          provider: {
+            name: provider.name,
+            model: options.model,
+            reasoningEffort: options.reasoningEffort,
+          },
+          repo:
+            args.repo ??
+            ({
+              rootPath: root,
+              projectName: "unknown",
+              headSha: null,
+              remoteUrl: null,
+              currentBranch: null,
+            } satisfies CaptureRepoMetadata),
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+            code: error instanceof ClawpatchError ? error.code : null,
+          },
+        });
         throw error;
       }
       emitProgress(context, "review", "feature-retry", {
@@ -874,6 +943,7 @@ export async function revalidateCommand(
   const findings = await selectRevalidationFindings(loaded, flags);
   const currentRunId = runId();
   const currentGit = await discoverGit(loaded.root);
+  const captureOptions = captureOptionsFromFlags(flags);
   const run = newRun(currentRunId, "revalidate", context, loaded.root, currentGit.headSha);
   run.findingIds = findings.map((finding) => finding.findingId);
   await writeRun(loaded.paths, run);
@@ -897,6 +967,18 @@ export async function revalidateCommand(
       });
       const prompt = await buildRevalidatePrompt(loaded.root, JSON.stringify(finding, null, 2));
       const output = await provider.revalidate(loaded.root, prompt, providerOptions(config));
+      await writeProviderCapture(captureOptions, {
+        operation: "revalidate",
+        prompt,
+        schema: revalidateJsonSchema,
+        rawOutput: output,
+        acceptedOutput: output,
+        validationStatus: "schema-valid-operation-valid",
+        status: "accepted",
+        provider: providerMetadata(provider.name, config),
+        repo: repoMetadata(loaded.root, loaded.project, currentGit),
+        tags: [`outcome:${output.outcome}`],
+      });
       const updated = appendFindingHistory(
         {
           ...finding,
@@ -1397,7 +1479,7 @@ function providerFlagSubset(
   flags: Record<string, string | boolean>,
 ): Record<string, string | boolean> {
   const subset: Record<string, string | boolean> = {};
-  for (const flag of ["provider", "model", "reasoningEffort"] as const) {
+  for (const flag of ["provider", "model", "reasoningEffort", "captureDir"] as const) {
     const value = stringFlag(flags, flag);
     if (value !== undefined) {
       subset[flag] = value;
@@ -1903,6 +1985,28 @@ function providerOptions(config: ReturnType<typeof applyProviderFlags>) {
     model: config.provider.model,
     reasoningEffort: config.provider.reasoningEffort,
     skipGitRepoCheck: config.provider.skipGitRepoCheck,
+  };
+}
+
+function providerMetadata(name: string, config: ReturnType<typeof applyProviderFlags>) {
+  return {
+    name,
+    model: config.provider.model,
+    reasoningEffort: config.provider.reasoningEffort,
+  };
+}
+
+function repoMetadata(
+  root: string,
+  project: Awaited<ReturnType<typeof loadProjectState>>["project"],
+  git: Awaited<ReturnType<typeof discoverGit>>,
+): CaptureRepoMetadata {
+  return {
+    rootPath: root,
+    projectName: project.name,
+    headSha: git.headSha,
+    remoteUrl: git.remoteUrl,
+    currentBranch: git.currentBranch,
   };
 }
 

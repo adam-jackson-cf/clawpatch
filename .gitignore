@@ -6,3 +6,6 @@ coverage/
 .clawpatch/patches/
 .clawpatch/reports/
 .clawpatch/locks/
+captures/
+teacher-runs/
+teacher-corpus/

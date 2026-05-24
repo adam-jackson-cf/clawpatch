@@ -152,7 +152,15 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
 const commandFlags = {
   init: new Set(["force"]),
-  map: new Set(["dryRun", "source", "provider", "model", "reasoningEffort", "skipGitRepoCheck"]),
+  map: new Set([
+    "dryRun",
+    "source",
+    "provider",
+    "model",
+    "reasoningEffort",
+    "skipGitRepoCheck",
+    "captureDir",
+  ]),
   status: new Set<string>(),
   review: new Set([
     "feature",
@@ -169,6 +177,7 @@ const commandFlags = {
     "dryRun",
     "promptFile",
     "exportTribunalLedger",
+    "captureDir",
     "includeDirty",
   ]),
   ci: new Set([
@@ -182,6 +191,7 @@ const commandFlags = {
     "skipGitRepoCheck",
     "output",
     "includeDirty",
+    "captureDir",
   ]),
   report: new Set(["status", "severity", "feature", "project", "category", "triage", "output"]),
   show: new Set(["finding"]),
@@ -204,6 +214,7 @@ const commandFlags = {
     "reasoningEffort",
     "skipGitRepoCheck",
     "includeDirty",
+    "captureDir",
   ]),
   doctor: new Set(["provider", "model", "reasoningEffort"]),
   "clean-locks": new Set<string>(),
@@ -233,6 +244,7 @@ const valueFlagNames = new Set([
   "reasoning-effort",
   "prompt-file",
   "export-tribunal-ledger",
+  "capture-dir",
   "output",
   "status",
   "severity",
@@ -428,6 +440,7 @@ Flags:
   --dry-run
   --prompt-file <path>    appends extra reviewer guidance to the prompt;
                           use "-" to read from stdin
+  --capture-dir <path>    opt-in private provider capture output directory
   --export-tribunal-ledger <path>
                           after the review completes, emit a single
                           JSONL file with one line per finding shaped
@@ -471,6 +484,7 @@ Flags:
   --provider <name>
   --model <name>
   --reasoning-effort <none|minimal|low|medium|high|xhigh>
+  --capture-dir <path>    opt-in private provider capture output directory
   --skip-git-repo-check
   --output <path>
   --json
@@ -528,6 +542,7 @@ Flags:
   --model <name>
   --reasoning-effort <none|minimal|low|medium|high|xhigh>
   --skip-git-repo-check
+  --capture-dir <path>    opt-in private provider capture output directory
   --dry-run
   --json
 `);
@@ -602,6 +617,7 @@ Flags:
   --model <name>
   --reasoning-effort <none|minimal|low|medium|high|xhigh>
   --skip-git-repo-check
+  --capture-dir <path>    opt-in private provider capture output directory
   --json
 `);
     return;
